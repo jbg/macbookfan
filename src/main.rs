@@ -1,3 +1,19 @@
+/*
+ * Copyright 2017 Jasper Bryant-Greene
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #[macro_use] extern crate clap;
 extern crate pid_control;
 
@@ -9,6 +25,7 @@ use std::time::{Duration, Instant};
 use clap::{App, Arg};
 use pid_control::{Controller, PIDController, DerivativeMode};
 
+// You almost certainly need to change these parameters!
 const TEMPERATURE_SYSFS_FILE: &str = "/sys/devices/platform/applesmc.768/temp7_input";
 const FAN1_SYSFS_FILE: &str = "/sys/devices/platform/applesmc.768/fan1_output";
 const FAN1_MIN: f64 = 2160.0;
@@ -26,7 +43,7 @@ fn main() {
                            .short("t")
                            .long("target")
                            .value_name("TEMPERATURE")
-                           .help("Sets the target temperature for your MacBook in degrees Celsius")
+                           .help("Sets the target temperature for your MacBook CPU in degrees Celsius")
                            .takes_value(true));
     println!("{} {}", app.get_name(), crate_version!());
     let matches = app.get_matches();

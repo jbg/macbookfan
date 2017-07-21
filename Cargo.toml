@@ -1,0 +1,8 @@
+[package]
+name = "macbookfan"
+version = "0.1.0"
+authors = ["Jasper Bryant-Greene <jbg@rf.net.nz>"]
+
+[dependencies]
+clap = "*"
+pid_control = "*"

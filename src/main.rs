@@ -15,10 +15,13 @@
  */
 
 #[macro_use] extern crate clap;
+#[macro_use] extern crate lazy_static;
 extern crate pid_control;
 
 use std::fs::File;
 use std::io::prelude::*;
+use std::num::ParseIntError;
+use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -26,14 +29,28 @@ use clap::{App, Arg};
 use pid_control::{Controller, PIDController, DerivativeMode};
 
 // You almost certainly need to change these parameters!
-const TEMPERATURE_SYSFS_FILE: &str = "/sys/devices/platform/applesmc.768/temp7_input";
-const FAN1_SYSFS_FILE: &str = "/sys/devices/platform/applesmc.768/fan1_output";
-const FAN1_MIN: f64 = 2160.0;
-const FAN1_MAX: f64 = 6156.0;
-const FAN2_SYSFS_FILE: &str = "/sys/devices/platform/applesmc.768/fan2_output";
-const FAN2_MIN: f64 = 2000.0;
-const FAN2_MAX: f64 = 5700.0;
+const APPLE_SMC: &str = "applesmc.768";
+const TEMPERATURE: &str = "temp7";
+const FANS: [&str; 2] = ["fan1", "fan2"];
+const POWER_SUPPLY: &str = "ADP1";
+const AC_ADJUSTMENT: f64 = 4.0;
 const REPORT_INTERVAL: i32 = 12;
+
+lazy_static! {
+    static ref SMC_SYSFS_DIRECTORY: PathBuf = {
+        Path::new("/sys/devices/platform").join(APPLE_SMC)
+    };
+    static ref POWER_SUPPLY_SYSFS_DIRECTORY: &'static Path = {
+        Path::new("/sys/class/power_supply")
+    };
+}
+
+struct Fan {
+    identifier: String,
+    cur_speed: i32,
+    min_speed: i32,
+    max_speed: i32
+}
 
 fn main() {
     let app = App::new("macbookfan").version(crate_version!())
@@ -47,54 +64,65 @@ fn main() {
                            .takes_value(true));
     println!("{} {}", app.get_name(), crate_version!());
     let matches = app.get_matches();
-    let target_temperature: f64 = matches.value_of("target").unwrap_or("35.0").parse().unwrap();
-    println!("target temperature: {}", target_temperature);
+
+    let target_temperature: f64 = matches.value_of("target").unwrap_or("41.0").parse().unwrap();
+    println!("base target temperature: {}", target_temperature);
+
+    let mut fans: Vec<Fan> = FANS.into_iter().map(|id| {
+        let mut file = File::create(SMC_SYSFS_DIRECTORY.join(format!("{}_manual", id))).unwrap();
+        let one = "1\n".to_string();
+        if let Err(e) = file.write_all(&one.into_bytes()) {
+            panic!("Failed to set fan {} to manual control: {}", id, e);
+        }
+        Fan { identifier: id.to_string(),
+              cur_speed: 0,
+              min_speed: i32_from_smc_file(&format!("{}_min", id)).unwrap(),
+              max_speed: i32_from_smc_file(&format!("{}_max", id)).unwrap() }
+    }).collect();
+
     let p = -100.0;
     let i = -100.0;
     let d = -100.0;
     let mut controller = PIDController::new(p, i, d);
-    controller.out_min = f64::min(FAN1_MIN, FAN2_MIN);
-    controller.out_max = f64::max(FAN1_MAX, FAN2_MAX);
+    controller.out_min = fans.iter().map(|f| f.min_speed).min().unwrap() as f64;
+    controller.out_max = fans.iter().map(|f| f.max_speed).max().unwrap() as f64;
     controller.d_mode = DerivativeMode::OnError;
     controller.set_target(target_temperature);
 
     let mut last_instant = Instant::now();
     let mut iterations = 0;
-    let mut cur_fan1_speed = 0;
-    let mut cur_fan2_speed = 0;
+    let mut power_supply_online = false;
     loop {
-        let current_temperature = {
-            let mut file = File::open(TEMPERATURE_SYSFS_FILE).unwrap();
-            let mut content = String::new();
-            file.read_to_string(&mut content).unwrap();
-            let raw: f64 = content.trim().parse().unwrap();
-            raw / 1000.0
-        };
+        let power_supply_online_now = read_file(POWER_SUPPLY_SYSFS_DIRECTORY.join(POWER_SUPPLY).join("online")).trim().parse::<i32>().unwrap() == 1;
+        if power_supply_online != power_supply_online_now {
+            if power_supply_online && !power_supply_online_now {
+                println!("setting baseline target temperature due to being on battery");
+                controller.set_target(target_temperature);
+            }
+            else if !power_supply_online && power_supply_online_now {
+                println!("adjusting target temperature up by {} degrees due to being on AC", AC_ADJUSTMENT);
+                controller.set_target(target_temperature + AC_ADJUSTMENT);
+            }
+            power_supply_online = power_supply_online_now;
+        }
+        let current_temperature = i32_from_smc_file(&format!("{}_input", TEMPERATURE)).unwrap() as f64 / 1000.0;
         let new_fan_speed = {
             let duration = last_instant.elapsed();
             let delta = duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9;
             last_instant = Instant::now();
-            controller.update(current_temperature, delta)
+            controller.update(current_temperature, delta).round() as i32
         };
         if iterations % REPORT_INTERVAL == 0 {
-            println!("t={}, f={}", current_temperature, new_fan_speed.round());
+            println!("current temperature:  {}, target temperature, {}, fan speed: {}", current_temperature, controller.target(), new_fan_speed);
         }
-        {
-            let fan1_speed = clamp(new_fan_speed, FAN1_MIN, FAN1_MAX);
-            if fan1_speed != cur_fan1_speed {
-                let mut file = File::create(FAN1_SYSFS_FILE).unwrap();
-                if let Err(e) = file.write_all(&format!("{}\n", fan1_speed).into_bytes()) {
-                    println!("Failed to set fan1 speed: {}", e);
+        for fan in &mut fans {
+            let speed = clamp(new_fan_speed, fan.min_speed, fan.max_speed);
+            if speed != fan.cur_speed {
+                let mut file = File::create(SMC_SYSFS_DIRECTORY.join(format!("{}_output", fan.identifier))).unwrap();
+                if let Err(e) = file.write_all(&format!("{}\n", speed).into_bytes()) {
+                    println!("Failed to set fan speed: {}", e);
                 }
-                cur_fan1_speed = fan1_speed;
-            }
-            let fan2_speed = clamp(new_fan_speed, FAN2_MIN, FAN2_MAX);
-            if fan2_speed != cur_fan2_speed {
-                let mut file = File::create(FAN2_SYSFS_FILE).unwrap();
-                if let Err(e) = file.write_all(&format!("{}\n", fan2_speed).into_bytes()) {
-                    println!("Failed to set fan2 speed: {}", e);
-                }
-                cur_fan2_speed = fan2_speed;
+                fan.cur_speed = speed;
             }
         }
         thread::sleep(Duration::from_secs(5));
@@ -102,6 +130,17 @@ fn main() {
     }
 }
 
-fn clamp(value: f64, min: f64, max: f64) -> i32 {
-    (if value < min { min } else if value > max { max } else { value }).round() as i32
+fn clamp(value: i32, min: i32, max: i32) -> i32 {
+    if value < min { min } else if value > max { max } else { value }
+}
+
+fn read_file(filename: PathBuf) -> String {
+    let mut file = File::open(filename).unwrap();
+    let mut content = String::new();
+    file.read_to_string(&mut content).unwrap();
+    content
+}
+
+fn i32_from_smc_file(filename: &str) -> Result<i32, ParseIntError> {
+    read_file(SMC_SYSFS_DIRECTORY.join(filename)).trim().parse()
 }

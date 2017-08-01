@@ -26,14 +26,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use clap::{App, Arg};
-use pid_control::{Controller, PIDController, DerivativeMode};
+use pid_control::{Controller, PIDController};
 
 // You almost certainly need to change these parameters!
 const APPLE_SMC: &str = "applesmc.768";
-const TEMPERATURE: &str = "temp7";
+const TEMPERATURE: &str = "temp6";
 const FANS: [&str; 2] = ["fan1", "fan2"];
 const POWER_SUPPLY: &str = "ADP1";
-const AC_ADJUSTMENT: f64 = 4.0;
+const AC_ADJUSTMENT: f64 = 6.0;
 const REPORT_INTERVAL: i32 = 12;
 
 lazy_static! {
@@ -80,13 +80,12 @@ fn main() {
               max_speed: i32_from_smc_file(&format!("{}_max", id)).unwrap() }
     }).collect();
 
-    let p = -100.0;
-    let i = -100.0;
-    let d = -100.0;
+    let p = -60.0;
+    let i = -60.0;
+    let d = -60.0;
     let mut controller = PIDController::new(p, i, d);
-    controller.out_min = fans.iter().map(|f| f.min_speed).min().unwrap() as f64;
-    controller.out_max = fans.iter().map(|f| f.max_speed).max().unwrap() as f64;
-    controller.d_mode = DerivativeMode::OnError;
+    controller.set_limits(fans.iter().map(|f| f.min_speed).min().unwrap() as f64,
+                          fans.iter().map(|f| f.max_speed).max().unwrap() as f64);
     controller.set_target(target_temperature);
 
     let mut last_instant = Instant::now();
@@ -113,7 +112,7 @@ fn main() {
             controller.update(current_temperature, delta).round() as i32
         };
         if iterations % REPORT_INTERVAL == 0 {
-            println!("current temperature:  {}, target temperature, {}, fan speed: {}", current_temperature, controller.target(), new_fan_speed);
+            println!("current temperature: {}, target temperature: {}, fan speed: {}", current_temperature, controller.target(), new_fan_speed);
         }
         for fan in &mut fans {
             let speed = clamp(new_fan_speed, fan.min_speed, fan.max_speed);

@@ -1,9 +1,13 @@
 [package]
 name = "macbookfan"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Jasper Bryant-Greene <jbg@rf.net.nz>"]
 
 [dependencies]
-clap = "*"
-lazy_static = "*"
-pid_control = "*"
+clap = "2.26"
+lazy_static = "0.2"
+pid_control = "0.7"
+clippy = {version = "*", optional = true}
+
+[features]
+default = []

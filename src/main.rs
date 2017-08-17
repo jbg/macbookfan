@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#![cfg_attr(feature="clippy", feature(plugin))]
+#![cfg_attr(feature="clippy", plugin(clippy))]
+
 #[macro_use] extern crate clap;
 #[macro_use] extern crate lazy_static;
 extern crate pid_control;
@@ -28,12 +31,13 @@ use std::time::{Duration, Instant};
 use clap::{App, Arg};
 use pid_control::{Controller, PIDController};
 
+
 // You almost certainly need to change these parameters!
+// TODO: automatically determine them
 const APPLE_SMC: &str = "applesmc.768";
 const TEMPERATURE: &str = "temp6";
 const FANS: [&str; 2] = ["fan1", "fan2"];
 const POWER_SUPPLY: &str = "ADP1";
-const AC_ADJUSTMENT: f64 = 6.0;
 const REPORT_INTERVAL: i32 = 12;
 
 lazy_static! {
@@ -61,12 +65,20 @@ fn main() {
                            .long("target")
                            .value_name("TEMPERATURE")
                            .help("Sets the target temperature for your MacBook CPU in degrees Celsius")
+                           .takes_value(true))
+                  .arg(Arg::with_name("ac-adjustment")
+                           .short("a")
+                           .long("ac-adjustment")
+                           .value_name("ADJUSTMENT")
+                           .help("Amount to add to target temperature when on AC")
                            .takes_value(true));
     println!("{} {}", app.get_name(), crate_version!());
     let matches = app.get_matches();
 
     let target_temperature: f64 = matches.value_of("target").unwrap_or("41.0").parse().unwrap();
-    println!("base target temperature: {}", target_temperature);
+    let ac_adjustment: f64 = matches.value_of("ac-adjustment").unwrap_or("6.0").parse().unwrap();
+    println!("Target temperature: {}", target_temperature);
+    println!("AC adjustment: +{}", ac_adjustment);
 
     let mut fans: Vec<Fan> = FANS.into_iter().map(|id| {
         let mut file = File::create(SMC_SYSFS_DIRECTORY.join(format!("{}_manual", id))).unwrap();
@@ -95,12 +107,12 @@ fn main() {
         let power_supply_online_now = read_file(POWER_SUPPLY_SYSFS_DIRECTORY.join(POWER_SUPPLY).join("online")).trim().parse::<i32>().unwrap() == 1;
         if power_supply_online != power_supply_online_now {
             if power_supply_online && !power_supply_online_now {
-                println!("setting baseline target temperature due to being on battery");
+                println!("Setting baseline target temperature due to being on battery");
                 controller.set_target(target_temperature);
             }
             else if !power_supply_online && power_supply_online_now {
-                println!("adjusting target temperature up by {} degrees due to being on AC", AC_ADJUSTMENT);
-                controller.set_target(target_temperature + AC_ADJUSTMENT);
+                println!("Adjusting target temperature up by {} degrees due to being on AC", ac_adjustment);
+                controller.set_target(target_temperature + ac_adjustment);
             }
             power_supply_online = power_supply_online_now;
         }
@@ -112,7 +124,7 @@ fn main() {
             controller.update(current_temperature, delta).round() as i32
         };
         if iterations % REPORT_INTERVAL == 0 {
-            println!("current temperature: {}, target temperature: {}, fan speed: {}", current_temperature, controller.target(), new_fan_speed);
+            println!("current temperature: {}, target: <={}, fan speed: {}", current_temperature, controller.target(), new_fan_speed);
         }
         for fan in &mut fans {
             let speed = clamp(new_fan_speed, fan.min_speed, fan.max_speed);

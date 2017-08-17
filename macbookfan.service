@@ -1,0 +1,9 @@
+[Unit]
+Description=Control the MacBook fan
+
+[Service]
+ExecStart=/usr/bin/macbookfan -t 43
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
